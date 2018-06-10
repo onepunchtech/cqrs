@@ -27,6 +27,11 @@ dependencies:
 - serialise
 - bytestring
 - stm
+- stm-chans
+- text
+- aeson
+- containers
+- uuid
 
 library:
   source-dirs: src
