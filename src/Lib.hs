@@ -8,7 +8,7 @@ import           Control.Concurrent
 import           Control.Concurrent.STM
 import           Control.Concurrent.STM.TMChan
 import           Control.Exception              (finally)
-import           Control.Monad                  (forever)
+import           Control.Monad                  (forever, void)
 import           Data.Aeson
 import qualified Data.ByteString.Lazy           as BS
 import qualified Data.Map                       as M
@@ -25,17 +25,15 @@ wsApp :: QuerySubscriptionState -> WS.ServerApp
 wsApp subState pending = do
   conn <- WS.acceptRequest pending
   WS.forkPingThread conn 30
-  finally (connect subState conn) disconnect
-  where
-    connect = undefined
-    disconnect = undefined
+  connId <- nextRandom
+  finally (connect connId conn subState) (atomically $ disconnect connId subState)
 
 type QueryId = UUID
 type ConnId = UUID
 
 data CQRSOps = JoinQuery T.Text
              | LeaveQuery QueryId
-             | Write T.Text
+             | Command T.Text
              deriving (Generic)
 
 data QueryRes = Res { queryId  :: QueryId
@@ -47,16 +45,16 @@ data QueryRes = Res { queryId  :: QueryId
 
 instance FromJSON CQRSOps
 
-connect subState conn = forever $ do
+connect connId conn subState = forever $ do
   msg <- WS.receiveData conn
   let (Just op) = decode msg :: Maybe CQRSOps
   case op of
     JoinQuery q    -> do
-      connId <- nextRandom
       (qId, chan) <- joinQuery q connId subState
-      forward conn qId chan
-    LeaveQuery qId -> return ()
-    Write v        -> return ()
+      void $ forkIO $ forward conn qId chan
+    LeaveQuery qId ->
+      atomically $ leaveQuery connId qId subState
+    Command command        -> handleCommand command
 
   where
     forward conn qId chan = do
@@ -78,12 +76,25 @@ joinQuery query connId subState = do
 
   return (qId, chan)
 
+handleCommand :: T.Text -> IO ()
+handleCommand _ = return ()
 
 
+leaveQuery :: ConnId -> QueryId -> QuerySubscriptionState -> STM ()
+leaveQuery connId qId subState = do
+  st <- readTVar subState
+  updatedSubs <- case M.lookup connId st of
+        Just subs -> do
+          case M.lookup qId subs of
+            Just chan -> closeTMChan chan
+            Nothing   -> return ()
+          return $ M.delete qId subs
+        Nothing   -> return M.empty
 
-leaveQuery :: QueryId -> QuerySubscriptionState -> STM ()
-leaveQuery = undefined
+  writeTVar subState (M.insert connId updatedSubs st)
+
 
 disconnect :: ConnId -> QuerySubscriptionState -> STM ()
-disconnect = undefined
+disconnect connId subState = do
+  modifyTVar subState (M.delete connId)
 
