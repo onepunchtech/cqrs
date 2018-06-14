@@ -27,6 +27,7 @@ dependencies:
 - serialise
 - bytestring
 - stm
+- mtl
 - stm-chans
 - text
 - aeson
